@@ -6,7 +6,7 @@ pub const PLAYER_SIZE: f32 = 64.0;  // Sprite size
 pub const PLAYER_SPEED: f32 = 500.0;
 
 pub const ENEMY_SIZE: f32 = 64.0;  // Sprite size
-pub const ENEMY_SPEED: f32 = 300.0;
+pub const ENEMY_SPEED: f32 = 200.0;
 pub const NUMBER_OF_ENEMIES: usize = 4;
 
 fn main() {
@@ -14,7 +14,8 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, (spawn_player, spawn_enemies, spawn_camera))  // Spawning systems
         .add_systems(Update, (player_movement, constrain_player_movement))  // Player movement systems
-        .add_systems(Update, (enemy_movement, update_enemy_direction, constrain_enemy_movement))  // Enemy movement systems
+        .add_systems(Update, (enemy_movement, update_enemy_direction))  // Enemy movement systems
+        .add_systems(Update, enemy_hit_player)  // Collision systems
         .run();
 }
 
@@ -147,8 +148,10 @@ pub fn enemy_movement(
 }
 
 pub fn update_enemy_direction(
-    mut enemy_query: Query<(&Transform, &mut Enemy)>,
-    window_query: Query<&Window, With<PrimaryWindow>>
+    mut enemy_query: Query<(&mut Transform, &mut Enemy)>,
+    window_query: Query<&Window, With<PrimaryWindow>>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands
 ) {
     let window = window_query.get_single().unwrap();
 
@@ -158,33 +161,57 @@ pub fn update_enemy_direction(
     let y_min = 0.0 + half_enemy_size;
     let y_max = window.height() - half_enemy_size;
 
-    for (transform, mut enemy) in enemy_query.iter_mut() {
-        let translation = transform.translation;
+    // TODO: Take into account movement past the screen border when rebounding
+    for (mut transform, mut enemy) in enemy_query.iter_mut() {
+        let mut translation = transform.translation;
+        let mut direction_changed = false;
 
         if translation.x < x_min || translation.x > x_max {
             enemy.direction.x *= -1.0;
+            direction_changed = true;
         }
 
         if translation.y < y_min || translation.y > y_max {
             enemy.direction.y *= -1.0;
+            direction_changed = true;
+        }
+
+        if direction_changed {
+            // Hit the edge of the screen, clamp to screen space
+            translation.x = translation.x.clamp(x_min, x_max);
+            translation.y = translation.y.clamp(y_min, y_max);
+            transform.translation = translation;
+
+            // Play the audio
+            let audio_file = if random() { "audio/footstep_grass_001.ogg" } else { "audio/footstep_snow_000.ogg" };
+            commands.spawn(AudioBundle {
+                source: asset_server.load(audio_file),
+                ..default()
+            });
         }
     }
 }
 
-pub fn constrain_enemy_movement(
-    mut enemy_query: Query<&mut Transform, With<Enemy>>,
-    window_query: Query<&Window, With<PrimaryWindow>>,
+pub fn enemy_hit_player(
+    mut commands: Commands,
+    mut player_query: Query<(Entity, &Transform), With<Player>>,
+    enemy_query: Query<&Transform, With<Enemy>>,
+    asset_server: Res<AssetServer>
 ) {
-    // Confine the enemy to the screen
-    let window = window_query.get_single().unwrap();
+    if let Ok((player_entity, player_transform)) = player_query.get_single_mut() {
+        for enemy_transform in enemy_query.iter() {
+            let distance = player_transform.translation.distance(enemy_transform.translation);
 
-    for mut transform in &mut enemy_query {
-        let enemy_half = ENEMY_SIZE / 2.0;
+            if distance < (PLAYER_SIZE + ENEMY_SIZE) / 2.0 {
+                println!("Enemy hit player! Game Over!");
 
-        let mut translation = transform.translation;
-        translation.x = translation.x.clamp(enemy_half, window.width() - enemy_half);
-        translation.y = translation.y.clamp(enemy_half, window.height() - enemy_half);
+                commands.spawn(AudioBundle {
+                    source: asset_server.load("audio/explosionCrunch_000.ogg"),
+                    ..default()
+                });
 
-        transform.translation = translation;
+                commands.entity(player_entity).despawn();
+            }
+        }
     }
 }
